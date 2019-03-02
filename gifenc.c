@@ -72,13 +72,51 @@ del_trie(Node *root, int degree)
 
 static void put_loop(ge_GIF *gif, uint16_t loop);
 
+uint8_t * ge_make_palette(depth)
+{
+    uint8_t *palette = malloc(3 << depth);
+    if (depth <= 4) {
+        memcpy(palette, vga, 3 << depth);
+    } else {
+        size_t idx = sizeof(vga);
+        memcpy(palette, vga, idx);
+        int i;
+        uint8_t r, g, b, v;
+        i = 0x10;
+        for (r = 0; r < 6; r++) {
+            for (g = 0; g < 6; g++) {
+                for (b = 0; b < 6; b++) {
+                    palette[idx] = r*51;
+                    idx++;
+                    palette[idx] = g*51;
+                    idx++;
+                    palette[idx] = b*51;
+                    idx++;
+                    if (++i == 1 << depth)
+                        goto done;
+                }
+            }
+        }
+        for (i = 1; i <= 24; i++) {
+            v = i * 0xFF / 25;
+            palette[idx] = v;
+            idx++;
+            palette[idx] = v;
+            idx++;
+            palette[idx] = v;
+            idx++;
+        }
+    }
+done:
+    return palette;
+}
+
 ge_GIF *
 ge_new_gif(
     const char *fname, uint16_t width, uint16_t height,
     uint8_t *palette, int depth, int loop
 )
 {
-    int i, r, g, b, v;
     ge_GIF *gif = calloc(1, sizeof(*gif) + 2*width*height);
     if (!gif)
         goto no_gif;
@@ -96,28 +134,13 @@ ge_new_gif(
     write_num(gif->fd, width);
     write_num(gif->fd, height);
     write(gif->fd, (uint8_t []) {0xF0 | (depth-1), 0x00, 0x00}, 3);
-    if (palette) {
-        write(gif->fd, palette, 3 << depth);
-    } else if (depth <= 4) {
-        write(gif->fd, vga, 3 << depth);
-    } else {
-        write(gif->fd, vga, sizeof(vga));
-        i = 0x10;
-        for (r = 0; r < 6; r++) {
-            for (g = 0; g < 6; g++) {
-                for (b = 0; b < 6; b++) {
-                    write(gif->fd, (uint8_t []) {r*51, g*51, b*51}, 3);
-                    if (++i == 1 << depth)
-                        goto done_gct;
-                }
-            }
-        }
-        for (i = 1; i <= 24; i++) {
-            v = i * 0xFF / 25;
-            write(gif->fd, (uint8_t []) {v, v, v}, 3);
-        }
+
+    if (!palette) {
+        palette = ge_make_palette(depth);
     }
-done_gct:
+    gif->palette = palette;
+    write(gif->fd, palette, 3 << depth);
+
     if (loop >= 0 && loop <= 0xFFFF)
         put_loop(gif, (uint16_t) loop);
     return gif;
@@ -252,6 +275,65 @@ set_delay(ge_GIF *gif, uint16_t d)
     write(gif->fd, (uint8_t []) {'!', 0xF9, 0x04, 0x04}, 4);
     write_num(gif->fd, d);
     write(gif->fd, "\0\0", 2);
+}
+
+uint8_t
+ge_get_palette_index(uint8_t *palette, uint8_t depth, uint8_t *rgb)
+{
+    int dist;
+    int best_dist = 256 * 2 * 3;
+    int offset;
+    int closest_idx = 0;
+
+    for(int i = 0; i < (1 << depth); i++)
+    {
+        offset = i * 3;
+        // we want to:
+        // 1. get abs val
+        // 2. multiply by 2 to exaggerate color channel distances
+        dist = (abs(palette[offset] - rgb[0]) << 1) + (abs(palette[offset + 1] - rgb[1]) << 1) + (abs(palette[offset + 2] - rgb[2]) << 1);
+        if (dist < best_dist)
+        {
+            best_dist = dist;
+            closest_idx = i;
+            // If dist is 0 we have an exact match
+            if (!dist) {
+                break;
+            }
+        }
+    }
+
+    return (uint8_t) closest_idx;
+}
+
+/*
+ * pixel_width = 3 for rgb, 4 for rgba
+ */
+void
+ge_rgba_frame_to_indexed(uint8_t *palette, uint8_t depth, uint8_t *indexed_pixels, uint8_t *rgba_pixels, int rgba_pixels_len, uint8_t pixel_width)
+{
+    int indexed_pixels_len = rgba_pixels_len / pixel_width;
+
+    uint8_t rgb[3];
+    int rgba_idx;
+    for(int i = 0; i < indexed_pixels_len; i++)
+    {
+        // alpha gets ignored if present.
+        rgba_idx = i * pixel_width;
+        rgb[0] = rgba_pixels[rgba_idx];
+        rgb[1] = rgba_pixels[rgba_idx + 1];
+        rgb[2] = rgba_pixels[rgba_idx + 2];
+        indexed_pixels[i] = ge_get_palette_index(palette, depth, rgb);
+    }
+}
+
+/*
+ * pixel_width = 3 for rgb, 4 for rgba
+ */
+void
+ge_populate_frame(ge_GIF *gif, uint8_t *indexed_pixels, int indexed_pixels_len)
+{
+    memcpy(gif->frame, indexed_pixels, indexed_pixels_len);
 }
 
 void
