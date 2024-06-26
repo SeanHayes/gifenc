@@ -72,7 +72,7 @@ del_trie(Node *root, int degree)
 
 static void put_loop(ge_GIF *gif, uint16_t loop);
 
-uint8_t * ge_make_palette(depth)
+uint8_t * ge_make_palette(int depth)
 {
     uint8_t *palette = malloc(3 << depth);
     if (depth <= 4) {
